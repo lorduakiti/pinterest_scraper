@@ -32,7 +32,17 @@
  * Exemplos:
  *   node _pinterest_scraper_image_like.js -d "C:\Imagens"                (aba aberta)
  *   node _pinterest_scraper_image_like.js -d ./img -l links.txt -t 2.5   (lista)
- *
+ * 
+ *   # Pelos parâmetros
+ *   node _pinterest_scraper_image_like.js -d .\img -l links.txt -U seu@email.com -P "suaSenha"
+ *   
+ *   # Só o usuário: a senha é pedida no terminal, sem aparecer na tela
+ *   node _pinterest_scraper_image_like.js -d .\img -U seu@email.com
+ *   
+ *   # Por variáveis de ambiente (recomendado)
+ *   $env:PINTEREST_USER="seu@email.com"; $env:PINTEREST_PASS="suaSenha"
+ *   node _pinterest_scraper_image_like.js -d .\img -l links.txt
+ *   
  * Conexão com o navegador (automática, nesta ordem):
  *   A) Chrome aberto com depuração remota (usa a aba do Pin já aberta):
  *        chrome --remote-debugging-port=9222 --user-data-dir="C:\chrome-scraper"
