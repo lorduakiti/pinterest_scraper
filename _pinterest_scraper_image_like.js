@@ -20,7 +20,14 @@
  *   -t, --delay <seg>      Delay entre downloads da lista (padrão: 1 segundo)
  *   -u, --url <link>       Link de um Pin específico (modo único)
  *       --no-like          Não reage com coração após o download
+ *   -U, --user <email>     E-mail/usuário do Pinterest (login automático se deslogado)
+ *   -P, --pass <senha>     Senha do Pinterest (se omitida, é pedida oculta no terminal)
  *   -h, --help             Mostra esta ajuda
+ *
+ * Credenciais também podem vir das variáveis de ambiente (recomendado, pois
+ * não ficam no histórico do terminal): PINTEREST_USER e PINTEREST_PASS.
+ * Se o Pinterest pedir CAPTCHA ou verificação em 2 etapas, conclua no navegador;
+ * o script aguarda até 2 minutos.
  *
  * Exemplos:
  *   node _pinterest_scraper_image_like.js -d "C:\Imagens"                (aba aberta)
@@ -44,11 +51,16 @@ const DEBUG_URL = process.env.CHROME_DEBUG_URL || 'http://127.0.0.1:9222';
 const CHROME_PATH = process.env.CHROME_PATH || detectChrome();
 const PROFILE_DIR = path.resolve(__dirname, '.pinterest-profile');
 const LOG_FILE_NAME = '_pinterest_claude_download.txt';
+const LIKE_WAIT_MS = 5000;   // espera após o like, antes de validar e sair da página
 const PIN_URL_RE = /pinterest\.[a-z.]+\/pin\//i;
 
 // ------------------------------------------------------------------ argumentos
 function parseArgs(argv) {
-  const opts = { dir: null, list: null, delay: 1, url: null, like: true, help: false };
+  const opts = {
+    dir: null, list: null, delay: 1, url: null, like: true, help: false,
+    user: process.env.PINTEREST_USER || null,
+    pass: process.env.PINTEREST_PASS || null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -62,6 +74,8 @@ function parseArgs(argv) {
       case '-t': case '--delay': opts.delay = Number(next()); break;
       case '-u': case '--url':   opts.url = next(); break;
       case '--no-like':          opts.like = false; break;
+      case '-U': case '--user':  opts.user = next(); break;
+      case '-P': case '--pass':  opts.pass = next(); break;
       case '-h': case '--help':  opts.help = true; break;
       default:
         // Posicionais: .txt => lista | link => url | demais => pasta
@@ -100,6 +114,16 @@ async function ask(question) {
   const answer = await rl.question(question);
   rl.close();
   return answer.trim();
+}
+
+/** Pergunta no terminal sem exibir o que é digitado (para senha). */
+async function askHidden(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  rl._writeToOutput = (s) => { if (s.includes(question)) process.stdout.write(s); };
+  const answer = await rl.question(question);
+  rl.close();
+  process.stdout.write('\n');
+  return answer;
 }
 
 function resolveDir(dir) {
@@ -187,6 +211,60 @@ async function isLoggedIn(page) {
   return authCookie || (dom.profile && !dom.loginBtn);
 }
 
+/**
+ * Faz login com usuário e senha e volta para a página do Pin.
+ * Aguarda até 2 min caso o Pinterest exija CAPTCHA/2FA (concluídos pelo usuário).
+ */
+async function loginPinterest(page, user, pass) {
+  const returnUrl = page.url();
+  const origin = new URL(returnUrl).origin;
+  console.log(`→ Fazendo login como ${user} ...`);
+
+  await page.goto(`${origin}/login/`, { waitUntil: 'networkidle2', timeout: 45000 });
+
+  const EMAIL = 'input#email, input[name="id"], input[type="email"]';
+  const PASS = 'input#password, input[name="password"], input[type="password"]';
+  const SUBMIT = 'button[type="submit"], [data-test-id="registerFormSubmitButton"]';
+
+  const emailInput = await page.waitForSelector(EMAIL, { visible: true, timeout: 15000 }).catch(() => null);
+  if (!emailInput) {
+    if (await isLoggedIn(page)) return true;   // já redirecionou logado
+    throw new Error('Formulário de login não encontrado.');
+  }
+
+  await emailInput.click({ clickCount: 3 });
+  await emailInput.type(user, { delay: 40 });
+  const passInput = await page.waitForSelector(PASS, { visible: true, timeout: 10000 });
+  await passInput.click({ clickCount: 3 });
+  await passInput.type(pass, { delay: 40 });
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {}),
+    page.click(SUBMIT),
+  ]);
+
+  // Aguarda confirmação do login (inclui tempo para CAPTCHA/2FA manual)
+  const deadline = Date.now() + 120000;
+  let warned = false;
+  while (Date.now() < deadline) {
+    if (await isLoggedIn(page)) break;
+    const errorMsg = await page.evaluate(() => {
+      const el = document.querySelector('[data-test-id="login-error"], #email-error, #password-error, [role="alert"]');
+      return el ? el.innerText.trim() : null;
+    }).catch(() => null);
+    if (errorMsg) throw new Error(`Login recusado pelo Pinterest: ${errorMsg}`);
+    if (!warned && Date.now() > deadline - 110000) {
+      console.log('  … aguardando confirmação (conclua CAPTCHA/2FA no navegador, se solicitado)');
+      warned = true;
+    }
+    await sleep(2000);
+  }
+  if (!(await isLoggedIn(page))) throw new Error('Tempo esgotado aguardando o login.');
+
+  console.log('✔ Login realizado com sucesso');
+  await page.goto(returnUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+  return true;
+}
+
 // ---------------------------------------------- passo 2: imagem principal + título
 async function getMainImage(page) {
   await page.waitForSelector('img', { timeout: 15000 });
@@ -251,6 +329,8 @@ async function reactWithHeart(page) {
   const already = await btn.evaluate((b) => b.getAttribute('aria-pressed') === 'true');
   if (already) return 'já havia reação neste Pin';
 
+  const countBefore = await readReactionsCount(page);
+
   // Se o menu de reações abrir no hover, escolhe o coração; senão, clique simples (padrão = coração).
   await btn.hover();
   await sleep(700);
@@ -258,10 +338,30 @@ async function reactWithHeart(page) {
     '[data-test-id="reaction-heart"], [data-test-id*="heart"], [aria-label="Amei"], [aria-label="Love"], [aria-label="Coração"]'
   );
   await (heart || btn).click();
-  await sleep(1000);
 
-  const ok = await page.$eval(BTN, (b) => b.getAttribute('aria-pressed') === 'true').catch(() => false);
-  return ok ? 'ok' : 'clique enviado, mas a reação não foi confirmada';
+  // Aguarda o Pinterest registrar a reação antes de validar e sair da página
+  await sleep(LIKE_WAIT_MS);
+
+  // Validação: botão marcado (aria-pressed=true) ou contador de reações aumentou
+  const pressed = await page.$eval(BTN, (b) => b.getAttribute('aria-pressed') === 'true').catch(() => false);
+  const countAfter = await readReactionsCount(page);
+  const countUp = countBefore !== null && countAfter !== null && countAfter > countBefore;
+
+  if (pressed || countUp) return 'ok';
+  return `falha: reação NÃO confirmada após ${LIKE_WAIT_MS / 1000}s ` +
+         `(aria-pressed=${pressed}, contador ${countBefore ?? '?'} -> ${countAfter ?? '?'})`;
+}
+
+/** Lê o contador de reações do Pin (null se não existir). */
+async function readReactionsCount(page) {
+  return page.evaluate(() => {
+    const el = document.querySelector('[data-test-id="reactions-count"]');
+    if (!el) return null;
+    const t = el.innerText.trim().toLowerCase().replace(',', '.');
+    const n = parseFloat(t);
+    if (Number.isNaN(n)) return null;
+    return /mil|k/.test(t) ? n * 1000 : /mi|m/.test(t) ? n * 1e6 : n;
+  }).catch(() => null);
 }
 
 // --------------------------------------------------- processamento de um Pin
@@ -273,11 +373,15 @@ async function processPin(page, destDir, like) {
   const { file, original } = await download(img.src, destDir, img.title);
   console.log(`  ✔ Salva: ${file}${original ? ' (resolução original)' : ''}`);
 
+  let liked = null;
   if (like) {
     const r = await reactWithHeart(page);
-    console.log(r === 'ok' ? '  ♥ Reação de coração aplicada' : `  ♥ ${r}`);
+    liked = r === 'ok' || r.startsWith('já havia');
+    if (r === 'ok') console.log('  ♥ Reação de coração aplicada e confirmada');
+    else if (liked) console.log(`  ♥ ${r}`);
+    else console.warn(`  ✖ LIKE NÃO REALIZADO: ${r}`);
   }
-  return file;
+  return { file, liked };
 }
 
 // ------------------------------------------------------------------------ main
@@ -286,6 +390,7 @@ async function main() {
   if (opts.help) return printHelp();
 
   const downloaded = [];          // links baixados com sucesso (modo lista)
+  const likeFailures = [];        // links em que o like não foi confirmado
   let destDir = null;
   let ctx = null;
   let page = null;
@@ -320,8 +425,17 @@ async function main() {
     }
 
     // 1) Login
-    const logged = await isLoggedIn(page);
+    let logged = await isLoggedIn(page);
     console.log(logged ? '✔ Usuário logado no Pinterest' : '✖ Usuário NÃO está logado no Pinterest');
+    if (!logged && opts.user) {
+      const pass = opts.pass || (await askHidden(`Senha do Pinterest para ${opts.user}: `));
+      try {
+        logged = await loginPinterest(page, opts.user, pass);
+      } catch (e) {
+        console.error(`✖ Falha no login: ${e.message}`);
+        if (!PIN_URL_RE.test(page.url())) await page.goBack().catch(() => {});
+      }
+    }
     if (!logged) {
       if (opts.like) console.log('  (a reação de coração exige login e será ignorada)');
       if (!/^s/i.test(await ask('Continuar mesmo assim? (s/N): '))) return;
@@ -344,11 +458,16 @@ async function main() {
       const link = links[i];
       console.log(`[${i + 1}/${links.length}] ${link}`);
       if (i > 0) await openPin(page, link);   // o 1º já foi aberto
-      await processPin(page, destDir, like);  // erro interrompe e cai no finally
+      const { liked } = await processPin(page, destDir, like);  // erro interrompe e cai no finally
       downloaded.push(link);
+      if (liked === false) likeFailures.push(link);
       if (i < links.length - 1 && opts.delay > 0) await sleep(opts.delay * 1000);
     }
     console.log(`\n✔ Concluído: ${downloaded.length}/${links.length} imagem(ns) baixada(s).`);
+    if (likeFailures.length) {
+      console.warn(`✖ Like não confirmado em ${likeFailures.length} Pin(s):`);
+      likeFailures.forEach((l) => console.warn(`   - ${l}`));
+    }
   } catch (err) {
     console.error(`\n✖ Erro: ${err.message}`);
     process.exitCode = 1;
