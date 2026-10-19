@@ -300,28 +300,31 @@ async function getMainImage(page) {
       if (best) src = best[0];
     }
 
-    // Título: alt descritivo > <h1> > og:title > <title>
+    // Título da imagem: alt descritivo > <h1> do Pin > og:title
     const rawAlt = (img.alt || '').trim();
     const alt = rawAlt.replace(/^Contém( uma imagem de)?:\s*/i, '').trim();
     const altIsGeneric = !alt || /^(Imagem do Pin|Pin image|Story Pin image)/i.test(rawAlt);
-    const title =
+    const imageTitle =
       (!altIsGeneric ? alt : '') ||
       document.querySelector('h1')?.innerText.trim() ||
       document.querySelector('meta[property="og:title"]')?.content?.trim() ||
-      document.title.replace(/\s*\|\s*Pinterest.*$/i, '').trim();
+      '';
 
-    return { src, title };
+    // Título da página (<title>), usado quando a imagem não tem título
+    const pageTitle = document.title.replace(/\s*[|\-–]\s*Pinterest.*$/i, '').trim();
+
+    return { src, imageTitle, pageTitle };
   });
 }
 
 // ----------------------------------------------------------- passo 3: download
-async function download(srcUrl, destDir, title) {
+async function download(srcUrl, destDir, baseName) {
   const urls = [...new Set([srcUrl.replace(/\/\d+x\//, '/originals/'), srcUrl])];
   for (const url of urls) {
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.pinterest.com/' } });
     if (!res.ok) continue;
     const ext = extFrom(res.headers.get('content-type'), url);
-    const base = sanitizeFileName(title || '') || path.basename(new URL(url).pathname, ext);
+    const base = baseName || path.basename(new URL(url).pathname, ext);
     const file = uniquePath(destDir, base, ext);
     fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
     return { file, original: url !== srcUrl };
@@ -378,9 +381,19 @@ async function readReactionsCount(page) {
 async function processPin(page, destDir, like) {
   const img = await getMainImage(page);
   if (!img) throw new Error('Imagem principal não encontrada.');
-  console.log(`  Título: ${img.title || '(sem título)'}`);
+  // Nome do arquivo: título da imagem > título da página > nome original da URL
+  let baseName = sanitizeFileName(img.imageTitle || '');
+  if (baseName) {
+    console.log(`  Título da imagem: ${img.imageTitle}`);
+  } else {
+    const pageTitle = img.pageTitle || (await page.title()).replace(/\s*[|\-–]\s*Pinterest.*$/i, '').trim();
+    baseName = sanitizeFileName(pageTitle || '');
+    console.log(baseName
+      ? `  Imagem sem título → usando o título da página: ${pageTitle}`
+      : '  Imagem e página sem título → usando o nome original do arquivo');
+  }
 
-  const { file, original } = await download(img.src, destDir, img.title);
+  const { file, original } = await download(img.src, destDir, baseName);
   console.log(`  ✔ Salva: ${file}${original ? ' (resolução original)' : ''}`);
 
   let liked = null;
