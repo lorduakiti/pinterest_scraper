@@ -177,14 +177,37 @@ function readLinks(file) {
   return links.filter((l) => /^https?:\/\//i.test(l));
 }
 
+/**
+ * Chave de comparação de links: usa o ID do Pin quando existir (ignora domínio
+ * br./www., barra final, query string e #); senão, a URL normalizada.
+ */
+function linkKey(link) {
+  const pin = link.match(/\/pin\/(\d+)/i);
+  if (pin) return `pin:${pin[1]}`;
+  try {
+    const u = new URL(link);
+    return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return link.trim();
+  }
+}
+
+/** Lê o log de downloads da pasta (somente leitura). Retorna Set de chaves. */
+function readDownloadLog(destDir) {
+  const file = path.join(destDir, LOG_FILE_NAME);
+  if (!fs.existsSync(file)) return { file, keys: new Set(), exists: false };
+  const keys = new Set(
+    fs.readFileSync(file, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map(linkKey)
+  );
+  return { file, keys, exists: true };
+}
+
 /** Salva os links baixados (acrescenta ao arquivo, sem duplicar). */
 function saveDownloadedLinks(destDir, links) {
   if (!destDir || !links.length) return null;
   const file = path.join(destDir, LOG_FILE_NAME);
-  const existing = fs.existsSync(file)
-    ? new Set(fs.readFileSync(file, 'utf8').split(/\r?\n/).map((l) => l.trim()).filter(Boolean))
-    : new Set();
-  const fresh = links.filter((l) => !existing.has(l));
+  const { keys: existing } = readDownloadLog(destDir);
+  const fresh = links.filter((l) => !existing.has(linkKey(l)));
   if (fresh.length) fs.appendFileSync(file, fresh.join(os.EOL) + os.EOL, 'utf8');
   return file;
 }
@@ -428,8 +451,29 @@ async function main() {
   process.once('SIGINT', () => { console.log('\nInterrompido.'); flushLog(); process.exit(130); });
 
   try {
-    const links = opts.list ? readLinks(path.resolve(opts.list)) : [];
+    // Modo lista: lê o TXT (somente leitura — o arquivo original nunca é alterado)
+    let links = opts.list ? readLinks(path.resolve(opts.list)) : [];
     if (opts.list && !links.length) throw new Error(`Nenhum link válido em ${opts.list}`);
+
+    if (opts.list) {
+      // A pasta é definida antes, para consultar o log de downloads já existente
+      destDir = resolveDir(opts.dir || (await ask('Pasta onde salvar as imagens: ')));
+      fs.mkdirSync(destDir, { recursive: true });
+
+      const log = readDownloadLog(destDir);
+      if (log.exists) {
+        const total = links.length;
+        const skipped = links.filter((l) => log.keys.has(linkKey(l)));
+        links = links.filter((l) => !log.keys.has(linkKey(l)));
+        console.log(`📝 Log encontrado: ${log.file}`);
+        console.log(`   ${skipped.length} de ${total} link(s) já baixado(s) serão ignorados.`);
+        skipped.forEach((l) => console.log(`   ↷ ${l}`));
+      }
+      if (!links.length) {
+        console.log('✔ Nada a fazer: todos os links da lista já foram baixados.');
+        return;
+      }
+    }
 
     ctx = await getBrowser();
     const pages = await ctx.browser.pages();
@@ -465,9 +509,11 @@ async function main() {
     }
     const like = opts.like && logged;
 
-    // Pasta de destino
-    destDir = resolveDir(opts.dir || (await ask('Pasta onde salvar as imagens: ')));
-    fs.mkdirSync(destDir, { recursive: true });
+    // Pasta de destino (no modo lista já foi definida antes)
+    if (!destDir) {
+      destDir = resolveDir(opts.dir || (await ask('Pasta onde salvar as imagens: ')));
+      fs.mkdirSync(destDir, { recursive: true });
+    }
 
     if (!opts.list) {
       // Modo único
