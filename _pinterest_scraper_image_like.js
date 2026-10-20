@@ -25,6 +25,9 @@
  *       --no-like          Não reage com coração após o download
  *   -U, --user <email>     E-mail/usuário do Pinterest (login automático se deslogado)
  *   -P, --pass <senha>     Senha do Pinterest (se omitida, é pedida oculta no terminal)
+ *   -c, --check            Só valida se os links já constam no log de downloads da
+ *                          pasta (-d). Valida o arquivo de -l ou, sem -l, todos os
+ *                          _pinterest*.txt da pasta. Não abre o navegador nem baixa nada
  *   -h, --help             Mostra esta ajuda
  *
  * Credenciais também podem vir das variáveis de ambiente (recomendado, pois
@@ -48,7 +51,11 @@
  *   # Por variáveis de ambiente (recomendado)
  *   $env:PINTEREST_USER="seu@email.com"; $env:PINTEREST_PASS="suaSenha"
  *   node _pinterest_scraper_image_like.js -d .\img -l links.txt
- *   
+ *
+ *   # Validação: os links das listas já foram todos baixados?
+ *   node _pinterest_scraper_image_like.js -c -d .\img                 (todos os _pinterest*.txt)
+ *   node _pinterest_scraper_image_like.js -c -d .\img -l links.txt    (um arquivo)
+ *
  * Conexão com o navegador (automática, nesta ordem):
  *   A) Chrome aberto com depuração remota (usa a aba do Pin já aberta):
  *        chrome --remote-debugging-port=9222 --user-data-dir="C:\chrome-scraper"
@@ -99,7 +106,7 @@ function logError(label, message, indent = '') {
 // ------------------------------------------------------------------ argumentos
 function parseArgs(argv) {
   const opts = {
-    dir: null, list: null, delay: 1, url: null, like: true, help: false,
+    dir: null, list: null, delay: 1, url: null, like: true, help: false, check: false,
     user: process.env.PINTEREST_USER || null,
     pass: process.env.PINTEREST_PASS || null,
   };
@@ -118,6 +125,7 @@ function parseArgs(argv) {
       case '--no-like':          opts.like = false; break;
       case '-U': case '--user':  opts.user = next(); break;
       case '-P': case '--pass':  opts.pass = next(); break;
+      case '-c': case '--check': opts.check = true; break;
       case '-h': case '--help':  opts.help = true; break;
       default:
         // Posicionais: .txt => lista | link => url | demais => pasta
@@ -543,9 +551,11 @@ function createProgress(total, stream = process.stdout) {
 }
 
 // ---------------------------------------------------------------- resumo final
+/** Linha do resumo: rótulo pontilhado + número alinhado à direita. */
+const row = (label, n, paint = String) => console.log(`  ${`${label} `.padEnd(30, '.')} ${paint(String(n).padStart(4))}`);
+
 function printSummary({ total, skipped, downloaded, errors, likeFailures }) {
   const pending = total - skipped - downloaded - errors.length;
-  const row = (label, n, paint = String) => console.log(`  ${`${label} `.padEnd(30, '.')} ${paint(String(n).padStart(4))}`);
 
   console.log(`\n${OUT.bold('━━━━━━━━━━━━━━━ Resumo ━━━━━━━━━━━━━━━')}`);
   row('Total de imagens da lista', total, OUT.bold);
@@ -565,10 +575,86 @@ function printSummary({ total, skipped, downloaded, errors, likeFailures }) {
   }
 }
 
+// ------------------------------------------------------ validação de listas (-c)
+const LIST_FILE_RE = /^_pinterest.*\.txt$/i;
+
+/**
+ * Só confere se os links das listas já constam no log de downloads da pasta —
+ * não abre o navegador, não baixa e não altera nenhum arquivo.
+ * Listas: o arquivo de -l ou, sem -l, todos os _pinterest*.txt da pasta de -d
+ * (exceto o próprio log). Sem -d, usa a pasta do arquivo de -l.
+ * Retorna true se todos os links de todas as listas já foram baixados.
+ */
+async function checkLists(opts) {
+  const listFile = opts.list ? path.resolve(opts.list) : null;
+  const dir = opts.dir ? resolveDir(opts.dir)
+    : listFile ? path.dirname(listFile)
+    : resolveDir(await ask('Pasta com as listas e o log de downloads: '));
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`Pasta não encontrada: ${dir}`);
+  if (listFile && !fs.existsSync(listFile)) throw new Error(`Arquivo não encontrado: ${listFile}`);
+
+  const files = listFile ? [listFile] : fs.readdirSync(dir)
+    .filter((f) => LIST_FILE_RE.test(f) && f.toLowerCase() !== LOG_FILE_NAME.toLowerCase())
+    .filter((f) => fs.statSync(path.join(dir, f)).isFile())
+    .sort()
+    .map((f) => path.join(dir, f));
+  if (!files.length) throw new Error(`Nenhum arquivo _pinterest*.txt encontrado em ${dir}`);
+
+  const log = readDownloadLog(dir);
+  console.log(log.exists
+    ? `📝 Log de downloads: ${log.file} (${log.keys.size} link(s))`
+    : `${OUT.yellow('⚠')} Log não encontrado: ${log.file} — nenhum link consta como baixado.`);
+
+  const totals = { total: 0, done: 0, pending: 0, complete: 0 };
+  for (const file of files) {
+    console.log(`\n${OUT.bold(`━━━━━━━ Validação: ${path.basename(file)} ━━━━━━━`)}`);
+    const links = readLinks(file);
+    const pending = links.filter((l) => !log.keys.has(linkKey(l)));
+    const done = links.length - pending.length;
+
+    row('Total de imagens da lista', links.length, OUT.bold);
+    row('Já baixadas', done, OUT.green);
+    row('Pendentes', pending.length, pending.length ? OUT.red : String);
+
+    if (!links.length) console.log(`  ${OUT.yellow('⚠')} Arquivo sem links válidos`);
+    else if (pending.length) {
+      console.log(`  ${OUT.red('✗')} Faltam ${pending.length} link(s):`);
+      pending.forEach((l) => console.log(`     - ${l}`));
+    } else console.log(`  ${OUT.green('✓')} Todos os links já foram baixados`);
+
+    totals.total += links.length;
+    totals.done += done;
+    totals.pending += pending.length;
+    if (!pending.length) totals.complete++;
+  }
+
+  if (files.length > 1) {
+    console.log(`\n${OUT.bold('━━━━━━━━━━━━ Resumo geral ━━━━━━━━━━━━')}`);
+    row('Arquivos validados', files.length, OUT.bold);
+    row('Arquivos completos', totals.complete, OUT.green);
+    row('Arquivos com pendências', files.length - totals.complete, totals.complete < files.length ? OUT.red : String);
+    row('Total de links', totals.total, OUT.bold);
+    row('Já baixados', totals.done, OUT.green);
+    row('Pendentes', totals.pending, totals.pending ? OUT.red : String);
+  }
+  return totals.pending === 0;
+}
+
 // ------------------------------------------------------------------------ main
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) return printHelp();
+
+  // Modo validação: só lê arquivos, sem navegador nem download
+  if (opts.check) {
+    try {
+      if (!(await checkLists(opts))) process.exitCode = 1;
+    } catch (err) {
+      logError('Erro', err.message);
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   const downloaded = [];          // links baixados com sucesso (modo lista)
   const likeFailures = [];        // links em que o like não foi confirmado
