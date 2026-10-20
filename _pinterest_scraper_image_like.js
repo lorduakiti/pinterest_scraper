@@ -8,6 +8,9 @@
  * 4. Após download bem-sucedido, reage com coração no botão "Reagir"
  * 5. Modo lista: lê links de um .txt (um por linha), com delay entre downloads,
  *    e salva os links baixados em "_pinterest_claude_download.txt"
+ * 6. No modo lista, um erro em um Pin não interrompe os demais; uma barra de
+ *    progresso fica fixa na última linha do terminal e, ao final, é exibido
+ *    um resumo (baixadas, erros, já baixadas antes e total da lista)
  *
  * Requisitos: Node.js 18+  |  npm i puppeteer-core
  *
@@ -28,6 +31,9 @@
  * não ficam no histórico do terminal): PINTEREST_USER e PINTEREST_PASS.
  * Se o Pinterest pedir CAPTCHA ou verificação em 2 etapas, conclua no navegador;
  * o script aguarda até 2 minutos.
+ *
+ * Cores: ativadas apenas em terminais que as suportam. NO_COLOR=1 desativa;
+ * FORCE_COLOR=1 força (ex.: ao redirecionar a saída).
  *
  * Exemplos:
  *   node _pinterest_scraper_image_like.js -d "C:\Imagens"                (aba aberta)
@@ -63,6 +69,32 @@ const PROFILE_DIR = path.resolve(__dirname, '.pinterest-profile');
 const LOG_FILE_NAME = '_pinterest_claude_download.txt';
 const LIKE_WAIT_MS = 5000;   // espera após o like, antes de validar e sair da página
 const PIN_URL_RE = /pinterest\.[a-z.]+\/pin\//i;
+
+// ----------------------------------------------------------------------- cores
+/**
+ * Cores ANSI só quando o stream é um terminal com suporte a cores.
+ * stream.hasColors() já respeita NO_COLOR; FORCE_COLOR força ou desliga ("0").
+ * No Windows 10/11 o Node ativa as sequências VT do console automaticamente.
+ */
+function palette(stream) {
+  const force = process.env.FORCE_COLOR;
+  const on = force !== undefined
+    ? force !== '0' && force !== 'false'
+    : !!stream.isTTY && typeof stream.hasColors === 'function' && stream.hasColors();
+  const sgr = (codes) => (s) => (on ? `\x1b[${codes}m${s}\x1b[0m` : String(s));
+  return {
+    red: sgr('31'), green: sgr('32'), yellow: sgr('33'), dim: sgr('2'), bold: sgr('1'),
+    alert: sgr('41;93'),   // fundo vermelho, letra amarela
+  };
+}
+const OUT = palette(process.stdout);
+const ERR = palette(process.stderr);
+
+/** Linha de erro: ícone ✖ vermelho e mensagem com fundo vermelho e letra amarela. */
+function logError(label, message, indent = '') {
+  const msg = String(message).replace(/\s*\n\s*/g, ' ').trim();
+  console.error(`${indent}${ERR.red('✖')} ${label}: ${ERR.alert(` ${msg} `)}`);
+}
 
 // ------------------------------------------------------------------ argumentos
 function parseArgs(argv) {
@@ -216,7 +248,7 @@ function saveDownloadedLinks(destDir, links) {
 async function getBrowser() {
   try {
     const browser = await puppeteer.connect({ browserURL: DEBUG_URL, defaultViewport: null });
-    console.log(`✔ Conectado ao Chrome aberto (${DEBUG_URL})`);
+    console.log(`${OUT.green('✔')} Conectado ao Chrome aberto (${DEBUG_URL})`);
     return { browser, attached: true };
   } catch { /* segue para o modo B */ }
 
@@ -224,7 +256,7 @@ async function getBrowser() {
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH, headless: false, userDataDir: PROFILE_DIR, defaultViewport: null,
   });
-  console.log('✔ Chrome iniciado com perfil próprio');
+  console.log(`${OUT.green('✔')} Chrome iniciado com perfil próprio`);
   return { browser, attached: false };
 }
 
@@ -293,7 +325,7 @@ async function loginPinterest(page, user, pass) {
   }
   if (!(await isLoggedIn(page))) throw new Error('Tempo esgotado aguardando o login.');
 
-  console.log('✔ Login realizado com sucesso');
+  console.log(`${OUT.green('✔')} Login realizado com sucesso`);
   await page.goto(returnUrl, { waitUntil: 'networkidle2', timeout: 45000 });
   return true;
 }
@@ -417,7 +449,7 @@ async function processPin(page, destDir, like) {
   }
 
   const { file, original } = await download(img.src, destDir, baseName);
-  console.log(`  ✔ Salva: ${file}${original ? ' (resolução original)' : ''}`);
+  console.log(`  ${OUT.green('✔')} Salva: ${file}${original ? ' (resolução original)' : ''}`);
 
   let liked = null;
   if (like) {
@@ -425,9 +457,112 @@ async function processPin(page, destDir, like) {
     liked = r === 'ok' || r.startsWith('já havia');
     if (r === 'ok') console.log('  ♥ Reação de coração aplicada e confirmada');
     else if (liked) console.log(`  ♥ ${r}`);
-    else console.warn(`  ✖ LIKE NÃO REALIZADO: ${r}`);
+    else console.warn(`  ${ERR.red('✖')} LIKE NÃO REALIZADO: ${r}`);
   }
   return { file, liked };
+}
+
+// ---------------------------------------------------------- barra de progresso
+/**
+ * Barra de progresso fixa na última linha do terminal. Cada console.log/warn/error
+ * apaga a barra, escreve a mensagem e redesenha a barra embaixo — as mensagens
+ * rolam acima dela. Usa só "\r" e ESC[2K (apagar linha), suportados pelo
+ * PowerShell/Windows Terminal, cmd, macOS e Linux. Fora de um TTY fica desativada.
+ */
+function createProgress(total, stream = process.stdout) {
+  const enabled = !!stream.isTTY;
+  const C = palette(stream);
+  const startedAt = Date.now();
+  const s = { done: 0, ok: 0, fail: 0 };
+  const originals = {};
+  let visible = false;
+  let running = false;
+  let timer = null;
+
+  const fmtTime = (ms) => {
+    const t = Math.round(ms / 1000);
+    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  };
+
+  function line() {
+    const cols = stream.columns || 80;
+    const pct = total ? s.done / total : 1;
+    const elapsed = Date.now() - startedAt;
+    const eta = s.done && s.done < total ? ` · faltam ~${fmtTime((elapsed / s.done) * (total - s.done))}` : '';
+    const ok = `✔ ${s.ok}`;
+    const fail = `✖ ${s.fail}`;
+    const info = ` ${s.done}/${total} ${String(Math.floor(pct * 100)).padStart(3)}% │ ${ok}  ${fail} │ ${fmtTime(elapsed)}${eta}`;
+    // Largura calculada pelo maior texto possível, para a barra não "pular" ao mudar o texto
+    const widest = ` ${total}/${total} 100% │ ✔ ${total}  ✖ ${total} │ 00:00 · faltam ~00:00`.length;
+    const width = Math.max(10, Math.min(40, cols - widest - 3));
+    const fill = Math.round(width * pct);
+    const plain = `[${'█'.repeat(fill)}${'░'.repeat(width - fill)}]${info}`;
+    if (plain.length >= cols) return plain.slice(0, cols - 1);   // terminal estreito: sem cores
+    return `[${C.green('█'.repeat(fill))}${C.dim('░'.repeat(width - fill))}]` +
+      info.replace(ok, C.green(ok)).replace(fail, s.fail ? C.red(fail) : fail);
+  }
+
+  const clear = () => { if (visible) { stream.write('\r\x1b[2K'); visible = false; } };
+  const draw = () => { if (running) { stream.write(`\r\x1b[2K${line()}`); visible = true; } };
+  const showCursor = () => stream.write('\x1b[?25h');
+
+  return {
+    start() {
+      if (!enabled) return this;
+      running = true;
+      for (const m of ['log', 'warn', 'error']) {
+        originals[m] = console[m];
+        console[m] = (...args) => { clear(); originals[m](...args); draw(); };
+      }
+      stream.write('\x1b[?25l');               // esconde o cursor enquanto a barra existe
+      process.once('exit', showCursor);
+      stream.on('resize', draw);
+      timer = setInterval(draw, 1000);          // atualiza o tempo durante downloads/delays
+      timer.unref();
+      draw();
+      return this;
+    },
+    tick(ok) {
+      s.done++;
+      if (ok) s.ok++; else s.fail++;
+      draw();
+    },
+    /** Remove os ganchos e deixa a última versão da barra visível. */
+    stop() {
+      if (!running) return;
+      draw();
+      running = false;
+      clearInterval(timer);
+      stream.off('resize', draw);
+      Object.assign(console, originals);
+      stream.write('\n');
+      visible = false;
+      showCursor();
+    },
+  };
+}
+
+// ---------------------------------------------------------------- resumo final
+function printSummary({ total, skipped, downloaded, errors, likeFailures }) {
+  const pending = total - skipped - downloaded - errors.length;
+  const row = (label, n, paint = String) => console.log(`  ${`${label} `.padEnd(30, '.')} ${paint(String(n).padStart(4))}`);
+
+  console.log(`\n${OUT.bold('━━━━━━━━━━━━━━━ Resumo ━━━━━━━━━━━━━━━')}`);
+  row('Total de imagens da lista', total, OUT.bold);
+  row('Baixadas nesta execução', downloaded, OUT.green);
+  row('Já baixadas anteriormente', skipped);
+  row('Erros', errors.length, errors.length ? OUT.red : String);
+  if (pending > 0) row('Não processadas', pending, OUT.yellow);
+  if (likeFailures.length) row('Like não confirmado', likeFailures.length, OUT.yellow);
+
+  if (errors.length) {
+    console.error(`\n${ERR.red('✖')} Pins com erro (não entram no log; serão tentados na próxima execução):`);
+    errors.forEach(({ link, message }) => console.error(`   - ${link}\n     ${ERR.alert(` ${message.replace(/\s*\n\s*/g, ' ')} `)}`));
+  }
+  if (likeFailures.length) {
+    console.warn(`\n${OUT.yellow('♥')} Like não confirmado em:`);
+    likeFailures.forEach((l) => console.warn(`   - ${l}`));
+  }
 }
 
 // ------------------------------------------------------------------------ main
@@ -437,23 +572,38 @@ async function main() {
 
   const downloaded = [];          // links baixados com sucesso (modo lista)
   const likeFailures = [];        // links em que o like não foi confirmado
+  const errors = [];              // { link, message } dos Pins que falharam
+  const stats = { total: 0, skipped: 0 };
   let destDir = null;
   let ctx = null;
   let page = null;
   let ownPage = false;
+  let progress = null;
+  let reported = false;
 
-  const flushLog = () => {
+  // Encerra a barra, grava o log e mostra o resumo (uma única vez)
+  const report = () => {
+    if (reported) return;
+    reported = true;
+    progress?.stop();
     if (!opts.list) return;
     const f = saveDownloadedLinks(destDir, downloaded);
     if (f) console.log(`📝 ${downloaded.length} link(s) registrado(s) em: ${f}`);
+    if (stats.total) printSummary({ ...stats, downloaded: downloaded.length, errors, likeFailures });
   };
-  // Ctrl+C também salva o registro
-  process.once('SIGINT', () => { console.log('\nInterrompido.'); flushLog(); process.exit(130); });
+  // Ctrl+C também salva o registro e mostra o resumo
+  process.once('SIGINT', () => {
+    progress?.stop();
+    console.log('\nInterrompido.');
+    report();
+    process.exit(130);
+  });
 
   try {
     // Modo lista: lê o TXT (somente leitura — o arquivo original nunca é alterado)
     let links = opts.list ? readLinks(path.resolve(opts.list)) : [];
     if (opts.list && !links.length) throw new Error(`Nenhum link válido em ${opts.list}`);
+    stats.total = links.length;
 
     if (opts.list) {
       // A pasta é definida antes, para consultar o log de downloads já existente
@@ -465,23 +615,31 @@ async function main() {
         const total = links.length;
         const skipped = links.filter((l) => log.keys.has(linkKey(l)));
         links = links.filter((l) => !log.keys.has(linkKey(l)));
+        stats.skipped = skipped.length;
         console.log(`📝 Log encontrado: ${log.file}`);
         console.log(`   ${skipped.length} de ${total} link(s) já baixado(s) serão ignorados.`);
         skipped.forEach((l) => console.log(`   ↷ ${l}`));
       }
       if (!links.length) {
-        console.log('✔ Nada a fazer: todos os links da lista já foram baixados.');
+        console.log(`${OUT.green('✔')} Nada a fazer: todos os links da lista já foram baixados.`);
         return;
       }
     }
 
     ctx = await getBrowser();
     const pages = await ctx.browser.pages();
+    let firstOpened = false;   // modo lista: o 1º Pin já está aberto para o loop?
 
     if (opts.list || opts.url) {
       page = ctx.attached ? await ctx.browser.newPage() : pages[0] || (await ctx.browser.newPage());
       ownPage = ctx.attached;
-      await openPin(page, opts.list ? links[0] : opts.url);
+      if (opts.list) {
+        // Se o 1º link falhar, abre a home só para checar o login; o erro do link é tratado no loop
+        firstOpened = await openPin(page, links[0]).then(() => true, () => false);
+        if (!firstOpened) await page.goto('https://www.pinterest.com/', { waitUntil: 'networkidle2', timeout: 45000 }).catch(() => {});
+      } else {
+        await openPin(page, opts.url);
+      }
     } else {
       page = pages.find((p) => PIN_URL_RE.test(p.url()));
       if (!page) {
@@ -493,13 +651,13 @@ async function main() {
 
     // 1) Login
     let logged = await isLoggedIn(page);
-    console.log(logged ? '✔ Usuário logado no Pinterest' : '✖ Usuário NÃO está logado no Pinterest');
+    console.log(logged ? `${OUT.green('✔')} Usuário logado no Pinterest` : `${OUT.red('✖')} Usuário NÃO está logado no Pinterest`);
     if (!logged && opts.user) {
       const pass = opts.pass || (await askHidden(`Senha do Pinterest para ${opts.user}: `));
       try {
         logged = await loginPinterest(page, opts.user, pass);
       } catch (e) {
-        console.error(`✖ Falha no login: ${e.message}`);
+        logError('Falha no login', e.message);
         if (!PIN_URL_RE.test(page.url())) await page.goBack().catch(() => {});
       }
     }
@@ -523,25 +681,33 @@ async function main() {
 
     // Modo lista
     console.log(`\n▶ ${links.length} link(s) | delay: ${opts.delay}s | destino: ${destDir}\n`);
+    progress = createProgress(links.length).start();
     for (let i = 0; i < links.length; i++) {
       const link = links[i];
       console.log(`[${i + 1}/${links.length}] ${link}`);
-      if (i > 0) await openPin(page, link);   // o 1º já foi aberto
-      const { liked } = await processPin(page, destDir, like);  // erro interrompe e cai no finally
-      downloaded.push(link);
-      if (liked === false) likeFailures.push(link);
+      try {
+        if (i > 0 || !firstOpened) await openPin(page, link);
+        const { liked } = await processPin(page, destDir, like);
+        downloaded.push(link);
+        if (liked === false) likeFailures.push(link);
+        progress.tick(true);
+      } catch (err) {
+        // Navegador fechado: não adianta seguir com os demais links
+        if (!ctx.browser.connected) throw new Error('O navegador foi fechado; execução interrompida.');
+        errors.push({ link, message: err.message });
+        logError('Erro', err.message, '  ');
+        progress.tick(false);
+      }
       if (i < links.length - 1 && opts.delay > 0) await sleep(opts.delay * 1000);
     }
-    console.log(`\n✔ Concluído: ${downloaded.length}/${links.length} imagem(ns) baixada(s).`);
-    if (likeFailures.length) {
-      console.warn(`✖ Like não confirmado em ${likeFailures.length} Pin(s):`);
-      likeFailures.forEach((l) => console.warn(`   - ${l}`));
-    }
+    if (errors.length) process.exitCode = 1;
   } catch (err) {
-    console.error(`\n✖ Erro: ${err.message}`);
+    progress?.stop();
+    console.error('');
+    logError('Erro', err.message);
     process.exitCode = 1;
   } finally {
-    flushLog();   // ao final ou em caso de erro
+    report();   // ao final ou em caso de erro
     if (ctx) {
       if (ownPage && page) await page.close().catch(() => {});
       ctx.attached ? ctx.browser.disconnect() : await ctx.browser.close();
