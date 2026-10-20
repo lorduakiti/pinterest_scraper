@@ -2,8 +2,10 @@
 node -v
 npm init -y
 npm i puppeteer-core
-node -e "require('puppeteer-core'); console.log('ok')"
+npm i playwright-core
+node -e "require('puppeteer-core'); require('playwright-core'); console.log('ok')"
 node _pinterest_scraper_image_like.js --help
+node _pinterest_scraper_image_like_pw.js --help
 
 # Caminho padrão da instalação do Google Chrome:
 # C:\Program Files\Google\Chrome\Application\chrome.exe

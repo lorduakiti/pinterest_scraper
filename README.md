@@ -122,6 +122,27 @@ Tentada automaticamente, nesta ordem:
    Outra porta/host: `$env:CHROME_DEBUG_URL="http://127.0.0.1:9333"`.
 2. **Chrome com perfil próprio** em `./.pinterest-profile`. Faça login uma vez e a sessão fica salva.
 
+## Versão Playwright (experimental)
+
+[`_pinterest_scraper_image_like_pw.js`](_pinterest_scraper_image_like_pw.js) faz o mesmo que o script
+principal, mas usa **Playwright** (`playwright-core`) no lugar do Puppeteer. Ela existe para comparar
+a estabilidade das duas bibliotecas antes de escolher uma.
+
+```powershell
+node _pinterest_scraper_image_like_pw.js -d "C:\Imagens\Pinterest" -l links.txt
+```
+
+- **O que é igual:** opções, saída, barra de progresso, resumo, modo `-c` e o log `_pinterest_claude_download.txt`.
+  Uma lista pode começar num script e continuar no outro.
+- **O que muda:**
+  - os cliques esperam o elemento ficar visível e estável;
+  - o botão "Reagir", o coração e o login também são encontrados pelo nome acessível (`getByRole`),
+    além dos seletores CSS atuais;
+  - as páginas não esperam a "rede ociosa", que no Pinterest pode não acontecer nunca.
+- **Perfil:** os dois scripts usam o mesmo `./.pinterest-profile`, então não precisa logar de novo.
+  **Não rode os dois ao mesmo tempo:** o Chrome trava o perfil.
+- **Modo A** (`--remote-debugging-port=9222`): no fim, o script só desconecta. Seu Chrome continua aberto.
+
 ## Terminal e cores
 
 - A barra de progresso e as cores funcionam no PowerShell / Windows Terminal (Windows 10+), cmd, macOS e Linux.

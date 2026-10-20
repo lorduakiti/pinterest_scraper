@@ -10,10 +10,19 @@ Pinterest (nomeada pelo título) e reage com ♥. Tem modo de Pin único e modo 
 [pinterest-links-txt.skill](pinterest-links-txt.skill) é uma skill do Claude in Chrome que gera
 esses `.txt` a partir das abas de um grupo; ela usa ferramentas do claude.ai, não do Claude Code.
 
+### Dois scripts durante a comparação Puppeteer × Playwright
+
+[_pinterest_scraper_image_like_pw.js](_pinterest_scraper_image_like_pw.js) é uma cópia com a camada
+de navegador trocada por `playwright-core`. As diferenças ficam em `getBrowser`, `gotoPage`/`openPin`,
+`firstVisible`/`appeared`, `isLoggedIn`, `loginPinterest`, `reactWithHeart` e no fechamento em `main`.
+**Mudanças de lógica comum** (argumentos, cores, barra, log, `-c`, resumo, download)
+**precisam ser feitas nos dois arquivos** até um deles ser removido. No Playwright, não use
+`waitUntil: 'networkidle'`.
+
 ## Comandos
 
 ```bash
-npm install                                          # única dependência: puppeteer-core
+npm install                                          # puppeteer-core e playwright-core
 node --check _pinterest_scraper_image_like.js        # checagem de sintaxe
 node _pinterest_scraper_image_like.js --help         # ajuda (gerada do comentário do topo)
 ```
@@ -43,7 +52,7 @@ Não há build, testes automatizados nem linter.
 
 ## Convenções
 
-- CommonJS, Node 18+, sem dependências além de `puppeteer-core`; prefira APIs nativas do Node.
+- CommonJS, Node 18+, sem dependências além de `puppeteer-core`/`playwright-core`; prefira APIs nativas do Node.
 - Mensagens, comentários e documentação em **português (pt-BR)**.
 - Ícones: `✓` verde (sucesso), `✗` vermelho (erro); mensagens de erro via `logError`
   (fundo vermelho, letra amarela). Saída precisa funcionar no PowerShell do Windows 11 e em terminais Unix.
