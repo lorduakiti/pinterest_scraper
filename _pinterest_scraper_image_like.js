@@ -90,10 +90,10 @@ function palette(stream) {
 const OUT = palette(process.stdout);
 const ERR = palette(process.stderr);
 
-/** Linha de erro: ícone ✖ vermelho e mensagem com fundo vermelho e letra amarela. */
+/** Linha de erro: ícone ✗ vermelho e mensagem com fundo vermelho e letra amarela. */
 function logError(label, message, indent = '') {
   const msg = String(message).replace(/\s*\n\s*/g, ' ').trim();
-  console.error(`${indent}${ERR.red('✖')} ${label}: ${ERR.alert(` ${msg} `)}`);
+  console.error(`${indent}${ERR.red('✗')} ${label}: ${ERR.alert(` ${msg} `)}`);
 }
 
 // ------------------------------------------------------------------ argumentos
@@ -248,7 +248,7 @@ function saveDownloadedLinks(destDir, links) {
 async function getBrowser() {
   try {
     const browser = await puppeteer.connect({ browserURL: DEBUG_URL, defaultViewport: null });
-    console.log(`${OUT.green('✔')} Conectado ao Chrome aberto (${DEBUG_URL})`);
+    console.log(`${OUT.green('✓')} Conectado ao Chrome aberto (${DEBUG_URL})`);
     return { browser, attached: true };
   } catch { /* segue para o modo B */ }
 
@@ -256,7 +256,7 @@ async function getBrowser() {
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH, headless: false, userDataDir: PROFILE_DIR, defaultViewport: null,
   });
-  console.log(`${OUT.green('✔')} Chrome iniciado com perfil próprio`);
+  console.log(`${OUT.green('✓')} Chrome iniciado com perfil próprio`);
   return { browser, attached: false };
 }
 
@@ -325,7 +325,7 @@ async function loginPinterest(page, user, pass) {
   }
   if (!(await isLoggedIn(page))) throw new Error('Tempo esgotado aguardando o login.');
 
-  console.log(`${OUT.green('✔')} Login realizado com sucesso`);
+  console.log(`${OUT.green('✓')} Login realizado com sucesso`);
   await page.goto(returnUrl, { waitUntil: 'networkidle2', timeout: 45000 });
   return true;
 }
@@ -449,7 +449,7 @@ async function processPin(page, destDir, like) {
   }
 
   const { file, original } = await download(img.src, destDir, baseName);
-  console.log(`  ${OUT.green('✔')} Salva: ${file}${original ? ' (resolução original)' : ''}`);
+  console.log(`  ${OUT.green('✓')} Salva: ${file}${original ? ' (resolução original)' : ''}`);
 
   let liked = null;
   if (like) {
@@ -457,7 +457,7 @@ async function processPin(page, destDir, like) {
     liked = r === 'ok' || r.startsWith('já havia');
     if (r === 'ok') console.log('  ♥ Reação de coração aplicada e confirmada');
     else if (liked) console.log(`  ♥ ${r}`);
-    else console.warn(`  ${ERR.red('✖')} LIKE NÃO REALIZADO: ${r}`);
+    else console.warn(`  ${ERR.red('✗')} LIKE NÃO REALIZADO: ${r}`);
   }
   return { file, liked };
 }
@@ -489,11 +489,11 @@ function createProgress(total, stream = process.stdout) {
     const pct = total ? s.done / total : 1;
     const elapsed = Date.now() - startedAt;
     const eta = s.done && s.done < total ? ` · faltam ~${fmtTime((elapsed / s.done) * (total - s.done))}` : '';
-    const ok = `✔ ${s.ok}`;
-    const fail = `✖ ${s.fail}`;
+    const ok = `✓ ${s.ok}`;
+    const fail = `✗ ${s.fail}`;
     const info = ` ${s.done}/${total} ${String(Math.floor(pct * 100)).padStart(3)}% │ ${ok}  ${fail} │ ${fmtTime(elapsed)}${eta}`;
     // Largura calculada pelo maior texto possível, para a barra não "pular" ao mudar o texto
-    const widest = ` ${total}/${total} 100% │ ✔ ${total}  ✖ ${total} │ 00:00 · faltam ~00:00`.length;
+    const widest = ` ${total}/${total} 100% │ ✓ ${total}  ✗ ${total} │ 00:00 · faltam ~00:00`.length;
     const width = Math.max(10, Math.min(40, cols - widest - 3));
     const fill = Math.round(width * pct);
     const plain = `[${'█'.repeat(fill)}${'░'.repeat(width - fill)}]${info}`;
@@ -556,7 +556,7 @@ function printSummary({ total, skipped, downloaded, errors, likeFailures }) {
   if (likeFailures.length) row('Like não confirmado', likeFailures.length, OUT.yellow);
 
   if (errors.length) {
-    console.error(`\n${ERR.red('✖')} Pins com erro (não entram no log; serão tentados na próxima execução):`);
+    console.error(`\n${ERR.red('✗')} Pins com erro (não entram no log; serão tentados na próxima execução):`);
     errors.forEach(({ link, message }) => console.error(`   - ${link}\n     ${ERR.alert(` ${message.replace(/\s*\n\s*/g, ' ')} `)}`));
   }
   if (likeFailures.length) {
@@ -621,7 +621,7 @@ async function main() {
         skipped.forEach((l) => console.log(`   ↷ ${l}`));
       }
       if (!links.length) {
-        console.log(`${OUT.green('✔')} Nada a fazer: todos os links da lista já foram baixados.`);
+        console.log(`${OUT.green('✓')} Nada a fazer: todos os links da lista já foram baixados.`);
         return;
       }
     }
@@ -651,7 +651,7 @@ async function main() {
 
     // 1) Login
     let logged = await isLoggedIn(page);
-    console.log(logged ? `${OUT.green('✔')} Usuário logado no Pinterest` : `${OUT.red('✖')} Usuário NÃO está logado no Pinterest`);
+    console.log(logged ? `${OUT.green('✓')} Usuário logado no Pinterest` : `${OUT.red('✗')} Usuário NÃO está logado no Pinterest`);
     if (!logged && opts.user) {
       const pass = opts.pass || (await askHidden(`Senha do Pinterest para ${opts.user}: `));
       try {

@@ -68,9 +68,9 @@ node _pinterest_scraper_image_like.js -d .\img -l links.txt
 ```
 [3/10] https://br.pinterest.com/pin/123456789/
   Título da imagem: Sala com plantas
-  ✔ Salva: C:\Imagens\Pinterest\Sala_com_plantas.jpg (resolução original)
+  ✓ Salva: C:\Imagens\Pinterest\Sala_com_plantas.jpg (resolução original)
   ♥ Reação de coração aplicada e confirmada
-[███████░░░░░░░░░░░░░░░░] 3/10  30% │ ✔ 3  ✖ 0 │ 00:41 · faltam ~01:35
+[███████░░░░░░░░░░░░░░░░] 3/10  30% │ ✓ 3  ✗ 0 │ 00:41 · faltam ~01:35
 
 ━━━━━━━━━━━━━━━ Resumo ━━━━━━━━━━━━━━━
   Total de imagens da lista ....   12
@@ -95,7 +95,7 @@ Tentada automaticamente, nesta ordem:
 ## Terminal e cores
 
 - A barra de progresso e as cores funcionam no PowerShell / Windows Terminal (Windows 10+), cmd, macOS e Linux.
-- Erros aparecem com ✖ vermelho e a mensagem em **fundo vermelho com letra amarela**; ✔ fica verde.
+- Erros aparecem com ✗ vermelho e a mensagem em **fundo vermelho com letra amarela**; ✓ fica verde.
 - Fora de um terminal (saída redirecionada para arquivo), a barra e as cores são desativadas.
 - `NO_COLOR=1` desativa as cores; `FORCE_COLOR=1` força as cores.
 

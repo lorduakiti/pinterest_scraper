@@ -42,8 +42,10 @@ Não há build, testes automatizados nem linter.
 
 - CommonJS, Node 18+, sem dependências além de `puppeteer-core`; prefira APIs nativas do Node.
 - Mensagens, comentários e documentação em **português (pt-BR)**.
-- Ícones: `✔` verde (sucesso), `✖` vermelho (erro); mensagens de erro via `logError`
+- Ícones: `✓` verde (sucesso), `✗` vermelho (erro); mensagens de erro via `logError`
   (fundo vermelho, letra amarela). Saída precisa funcionar no PowerShell do Windows 11 e em terminais Unix.
+  **Não use `✔` (U+2714) nem `✖` (U+2716)**: o Windows Terminal os desenha como emoji
+  colorido (roxo) e ignora a cor ANSI. `✓`/`✗` são símbolos de texto e aceitam cor.
 - Seções separadas por comentários `// ----- nome`; JSDoc curto em português nas funções.
 
 ## Cuidados
