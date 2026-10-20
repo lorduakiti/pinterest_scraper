@@ -14,6 +14,7 @@ pelo título da imagem, e reage com ♥ ao Pin após o download.
   - Links já baixados (registrados em `_pinterest_claude_download.txt` na pasta de destino) são ignorados.
   - **Barra de progresso fixa** na última linha do terminal.
   - **Resumo final**: total da lista, baixadas, já baixadas anteriormente, erros (e não processadas, se interrompido).
+- **Modo validação** (`-c`): confere se os links das listas `_pinterest*.txt` já foram todos baixados, sem abrir o navegador nem baixar nada.
 
 ## Requisitos
 
@@ -45,6 +46,7 @@ node _pinterest_scraper_image_like.js [opções]
 | `--no-like` | Não reage com coração |
 | `-U, --user <email>` | Usuário do Pinterest, para login automático |
 | `-P, --pass <senha>` | Senha (se omitida, é pedida sem aparecer na tela) |
+| `-c, --check` | Só valida se os links já constam no log de downloads (veja abaixo) |
 | `-h, --help` | Ajuda |
 
 Sem `-l` nem `-u`, o script usa a aba de Pin que já estiver aberta no Chrome.
@@ -80,6 +82,34 @@ node _pinterest_scraper_image_like.js -d .\img -l links.txt
 ```
 
 O código de saída é `1` quando há erros, o que permite usar o script em automações.
+
+### Modo validação (`-c`)
+
+Confere se os links das listas temporárias já estão no `_pinterest_claude_download.txt`
+da pasta. **Não abre o navegador, não baixa e não altera nenhum arquivo.**
+
+```powershell
+# Todos os _pinterest*.txt da pasta (o próprio log é ignorado)
+node _pinterest_scraper_image_like.js -c -d "C:\Imagens\Pinterest"
+
+# Um arquivo específico (sem -d, usa o log da pasta do arquivo)
+node _pinterest_scraper_image_like.js -c -l "C:\Imagens\Pinterest\_pinterest_claude_20261018-17-19.txt"
+```
+
+Para cada arquivo, mostra o total da lista, quantos já foram baixados e quantos estão pendentes, com
+os links que faltam. Com mais de um arquivo, mostra também um resumo geral:
+
+```
+━━━━━━━ Validação: _pinterest_claude_20261019-09-00.txt ━━━━━━━
+  Total de imagens da lista ....    3
+  Já baixadas ..................    1
+  Pendentes ....................    2
+  ✗ Faltam 2 link(s):
+     - https://br.pinterest.com/pin/333/
+     - https://br.pinterest.com/pin/444/
+```
+
+O código de saída é `0` quando tudo já foi baixado e `1` quando há pendências ou erro.
 
 ## Conexão com o navegador
 

@@ -34,7 +34,10 @@ Não há build, testes automatizados nem linter.
 6. `createProgress`: barra fixa na última linha. Ela substitui `console.log/warn/error`
    enquanto está ativa (apaga a barra, escreve, redesenha); `stop()` restaura os originais.
    Escreva sempre via `console.*`, nunca com `process.stdout.write` direto durante o loop, senão a barra se mistura ao texto.
-7. `printSummary` e `main`. No modo lista, cada Pin tem seu próprio `try/catch`: o erro vai para
+7. `checkLists` (`-c`): modo só leitura. Compara as listas `_pinterest*.txt` (ou o arquivo de `-l`)
+   com o log via `linkKey` e imprime um resumo por arquivo, reaproveitando `row`. Roda no início de
+   `main` e retorna antes de qualquer acesso ao navegador. Nunca adicione escrita ou rede a esse modo.
+8. `printSummary` e `main`. No modo lista, cada Pin tem seu próprio `try/catch`: o erro vai para
    `errors` e o loop continua. A exceção é o navegador desconectado, que aborta. `report()` (idempotente)
    encerra a barra, grava o log e imprime o resumo, tanto no `finally` quanto no Ctrl+C.
 
