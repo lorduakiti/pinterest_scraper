@@ -15,6 +15,10 @@
  * 6. No modo lista, um erro em um Pin não interrompe os demais; uma barra de
  *    progresso fica fixa na última linha do terminal e, ao final, é exibido
  *    um resumo (baixadas, erros, já baixadas antes e total da lista)
+ * 7. Carregamento de cada Pin: espera 1 s; se a página (documento, imagem do
+ *    Pin e, com like, o botão "Reagir") estiver incompleta, espera até mais 5 s;
+ *    senão recarrega e reinicia o ciclo. Após 3 tentativas o link é considerado
+ *    quebrado (conta como erro e é tentado de novo na próxima execução)
  *
  * Requisitos: Node.js 18+  |  npm i playwright-core
  *
@@ -79,6 +83,10 @@ const CHROME_PATH = process.env.CHROME_PATH || detectChrome();
 const PROFILE_DIR = path.resolve(__dirname, '.pinterest-profile');
 const LOG_FILE_NAME = '_pinterest_claude_download.txt';
 const LIKE_WAIT_MS = 5000;   // espera após o like, antes de validar e sair da página
+const LOAD_DELAY_MS = 1000;   // espera inicial após abrir/recarregar o Pin
+const LOAD_EXTRA_MS = 5000;   // espera extra se a página ainda estiver incompleta
+const LOAD_ATTEMPTS = 3;      // tentativas (1 abertura + refreshes) antes de considerar o link quebrado
+const REACT_STABLE_MS = 2000; // estado do "Reagir" precisa ficar igual por esse tempo antes de decidir
 const PIN_URL_RE = /pinterest\.[a-z.]+\/pin\//i;
 
 // ----------------------------------------------------------------------- cores
@@ -290,10 +298,59 @@ async function gotoPage(page, url) {
   await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
 }
 
-async function openPin(page, url) {
-  await gotoPage(page, url);
-  if (!PIN_URL_RE.test(page.url())) throw new Error(`Não é uma página de Pin: ${page.url()}`);
-  await page.locator('img[src*="pinimg.com"]').first().waitFor({ state: 'attached', timeout: 15000 }).catch(() => {});
+/**
+ * Abre o Pin e confirma que a página carregou de verdade. Ciclo por tentativa:
+ * espera LOAD_DELAY_MS; se ainda estiver incompleta, espera até LOAD_EXTRA_MS a
+ * mais; se continuar incompleta, recarrega (refresh) e reinicia o ciclo. Após
+ * LOAD_ATTEMPTS tentativas sem a imagem do Pin, considera o link quebrado.
+ * O botão "Reagir" (só exigido com like) faltando não quebra o link: o download
+ * segue e reactWithHeart informa o problema.
+ */
+async function openPin(page, url, needReact = false) {
+  let missing = [];
+  for (let attempt = 1; attempt <= LOAD_ATTEMPTS; attempt++) {
+    let navError = null;
+    try {
+      if (attempt === 1) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      else await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 });
+    } catch (err) {
+      navError = `navegação (${err.message.split('\n')[0]})`;
+    }
+    // Redirecionou para fora de um Pin (ex.: Pin removido → home): não adianta recarregar
+    if (!navError && !PIN_URL_RE.test(page.url())) throw new Error(`Não é uma página de Pin: ${page.url()}`);
+
+    await sleep(LOAD_DELAY_MS);
+    missing = await missingParts(page, needReact);
+    for (const deadline = Date.now() + LOAD_EXTRA_MS; missing.length && Date.now() < deadline;) {
+      await sleep(250);
+      missing = await missingParts(page, needReact);
+    }
+    if (!missing.length) return;
+    if (navError) missing.unshift(navError);
+    // Só o "Reagir" faltando na última tentativa: segue com o download
+    if (attempt === LOAD_ATTEMPTS && missing.every((m) => m === 'botão "Reagir"')) return;
+    if (attempt < LOAD_ATTEMPTS) {
+      console.log(`  ${OUT.yellow('↻')} Página incompleta (faltando: ${missing.join(', ')}) — recarregando (tentativa ${attempt + 1}/${LOAD_ATTEMPTS})`);
+    }
+  }
+  throw new Error(`Link quebrado: a página não carregou após ${LOAD_ATTEMPTS} tentativas (faltando: ${missing.join(', ')})`);
+}
+
+/** Partes da página do Pin que ainda não carregaram (lista vazia = página completa). */
+async function missingParts(page, needReact) {
+  return page.evaluate((needReact) => {
+    const missing = [];
+    if (document.readyState !== 'complete') missing.push('documento');
+    const img = document.querySelector(
+      '[data-test-id="pin-closeup-image"] img, [data-test-id="story-pin-image-block"] img, ' +
+      '[data-test-id="closeup-image"] img, [data-test-id="visual-content-container"] img'
+    ) || [...document.images].find((i) => /pinimg\.com/.test(i.currentSrc || i.src) && i.naturalWidth > 100);
+    if (!img || !img.complete || !img.naturalWidth) missing.push('imagem do Pin');
+    if (needReact && !document.querySelector('button[data-test-id="react-button"], button[aria-label="Reagir"], button[aria-label="React"]')) {
+      missing.push('botão "Reagir"');
+    }
+    return missing;
+  }, needReact).catch((err) => [`página (${err.message.split('\n')[0]})`]);
 }
 
 /** Primeiro elemento visível entre os candidatos (CSS atual ou por papel/nome acessível). */
@@ -435,8 +492,9 @@ async function reactWithHeart(page) {
   if (!(await appeared(btn, 8000))) return 'botão "Reagir" não encontrado';
   const isPressed = async () => (await btn.getAttribute('aria-pressed', { timeout: 3000 }).catch(() => null)) === 'true';
 
-  // Já reagido? Não clica de novo (o clique desfaria a reação).
-  if (await isPressed()) return 'já havia reação neste Pin';
+  // Já reagido? Não clica de novo (o clique desfaria a reação). O estado só vale
+  // depois que o Pinterest aplica a reação da conta — ver waitReactionState.
+  if (await waitReactionState(page, isPressed)) return 'já havia reação neste Pin';
 
   const countBefore = await readReactionsCount(page);
 
@@ -456,9 +514,38 @@ async function reactWithHeart(page) {
   const countAfter = await readReactionsCount(page);
   const countUp = countBefore !== null && countAfter !== null && countAfter > countBefore;
 
+  // Trava: contador caiu = o clique DESFEZ uma reação que já existia. Clica de novo para restaurar.
+  if (countBefore !== null && countAfter !== null && countAfter < countBefore) {
+    await btn.click();
+    await sleep(LIKE_WAIT_MS);
+    const restored = await readReactionsCount(page);
+    if (restored !== null && restored >= countBefore) return 'já havia reação neste Pin (o clique a desfez e ela foi restaurada)';
+    return `falha: o clique DESFEZ uma reação existente e a restauração não foi confirmada ` +
+           `(contador ${countBefore} -> ${countAfter} -> ${restored ?? '?'})`;
+  }
+
   if (pressed || countUp) return 'ok';
   return `falha: reação NÃO confirmada após ${LIKE_WAIT_MS / 1000}s ` +
          `(aria-pressed=${pressed}, contador ${countBefore ?? '?'} -> ${countAfter ?? '?'})`;
+}
+
+/**
+ * Espera o estado do botão "Reagir" estabilizar e o retorna. O Pinterest desenha o
+ * botão com aria-pressed="false" e só depois aplica a reação da conta; ler antes
+ * disso faz o clique DESFAZER uma reação existente. Espera a rede acalmar (no
+ * máximo 5 s) e exige o mesmo valor por REACT_STABLE_MS (no máximo 8 s no total).
+ */
+async function waitReactionState(page, isPressed) {
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+  const deadline = Date.now() + 8000;
+  let last = await isPressed();
+  let since = Date.now();
+  while (!last && Date.now() < deadline && Date.now() - since < REACT_STABLE_MS) {
+    await sleep(250);
+    const now = await isPressed();
+    if (now !== last) { last = now; since = Date.now(); }
+  }
+  return last;
 }
 
 /** Lê o contador de reações do Pin (null se não existir). */
@@ -754,17 +841,17 @@ async function main() {
       ownPage = ctx.attached;
       if (opts.list) {
         // Se o 1º link falhar, abre a home só para checar o login; o erro do link é tratado no loop
-        firstOpened = await openPin(page, links[0]).then(() => true, () => false);
+        firstOpened = await openPin(page, links[0], opts.like).then(() => true, () => false);
         if (!firstOpened) await gotoPage(page, 'https://www.pinterest.com/').catch(() => {});
       } else {
-        await openPin(page, opts.url);
+        await openPin(page, opts.url, opts.like);
       }
     } else {
       page = pages.find((p) => PIN_URL_RE.test(p.url()));
       if (!page) {
         const url = await ask('Nenhuma aba de Pin aberta. URL do Pin: ');
         page = pages[0] || (await ctx.context.newPage());
-        await openPin(page, url);
+        await openPin(page, url, opts.like);
       }
     }
 
@@ -805,7 +892,7 @@ async function main() {
       const link = links[i];
       console.log(`[${i + 1}/${links.length}] ${link}`);
       try {
-        if (i > 0 || !firstOpened) await openPin(page, link);
+        if (i > 0 || !firstOpened) await openPin(page, link, like);
         const { liked } = await processPin(page, destDir, like);
         downloaded.push(link);
         if (liked === false) likeFailures.push(link);

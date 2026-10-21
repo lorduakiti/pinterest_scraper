@@ -11,6 +11,9 @@ pelo título da imagem, e reage com ♥ ao Pin após o download.
 - Reage com coração após o download e confirma se a reação foi registrada (não desfaz reações existentes).
 - **Modo lista**: processa um `.txt` com um link por linha, com delay entre os Pins.
   - Um erro em um Pin **não interrompe** a lista; o Pin com erro é tentado de novo na próxima execução.
+  - **Carregamento verificado**: após abrir o Pin, espera 1 s; se a página estiver incompleta (documento,
+    imagem do Pin e, com like, o botão "Reagir"), espera até mais 5 s; senão recarrega e repete. Após
+    3 tentativas o link é considerado **quebrado** (conta como erro).
   - Links já baixados (registrados em `_pinterest_claude_download.txt` na pasta de destino) são ignorados.
   - **Barra de progresso fixa** na última linha do terminal.
   - **Resumo final**: total da lista, baixadas, já baixadas anteriormente, erros (e não processadas, se interrompido).
@@ -149,6 +152,33 @@ node _pinterest_scraper_image_like_pw.js -d "C:\Imagens\Pinterest" -l links.txt
 - Erros aparecem com ✗ vermelho e a mensagem em **fundo vermelho com letra amarela**; ✓ fica verde.
 - Fora de um terminal (saída redirecionada para arquivo), a barra e as cores são desativadas.
 - `NO_COLOR=1` desativa as cores; `FORCE_COLOR=1` força as cores.
+
+## Testes
+
+[`_test_validate.js`](_test_validate.js) roda o scraper com uma lista e valida o resultado de ponta a ponta:
+resumo final, imagens gravadas (formato, nome e tamanho), o log `_pinterest_claude_download.txt`, a
+reexecução ("Nada a fazer" sem abrir o navegador) e o modo `-c`.
+
+```powershell
+# Puppeteer: _pinterest.txt → ./imgs
+node _test_validate.js
+
+# Playwright, sem reagir aos Pins
+node _test_validate.js -s _pinterest_scraper_image_like_pw.js -d ./imgs_pw --no-like
+```
+
+> ⚠️ Roda o scraper **de verdade**: abre o Chrome, usa sua conta e, sem `--no-like`, reage aos Pins.
+> Use `--skip-run` para só validar uma pasta já baixada. Sai com código `1` se alguma verificação falhar.
+
+Antes de validar, o teste roda o **reset** ([`_test_reset.js`](_test_reset.js)), para começar sempre do zero:
+
+1. apaga as imagens da pasta de destino (só `.jpg`, `.jpeg`, `.png`, `.webp` e `.gif`; os outros arquivos ficam);
+2. esvazia o `_pinterest_claude_download.txt` da pasta;
+3. abre cada Pin da lista e **remove a sua reação (♥)**. Só clica quando o botão confirma que há reação, então nunca adiciona uma.
+
+Assim o teste exercita o like de verdade. O reset só aceita pastas **dentro do projeto** (nunca a raiz) e pode rodar
+sozinho: `node _test_reset.js -d ./imgs -d ./imgs_pw` (`--skip-unlike` só limpa as pastas; `--skip-files` só remove
+as reações). No validador, `--no-reset` pula essa etapa.
 
 ## Gerando a lista de links
 

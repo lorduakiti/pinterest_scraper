@@ -136,3 +136,6 @@ dist
 .pnp.*
 
 .pinterest-profile/*
+# Saídas dos testes (_test_validate.js)
+imgs/
+imgs_pw/

@@ -17,7 +17,8 @@ de navegador trocada por `playwright-core`. As diferenças ficam em `getBrowser`
 `firstVisible`/`appeared`, `isLoggedIn`, `loginPinterest`, `reactWithHeart` e no fechamento em `main`.
 **Mudanças de lógica comum** (argumentos, cores, barra, log, `-c`, resumo, download)
 **precisam ser feitas nos dois arquivos** até um deles ser removido. No Playwright, não use
-`waitUntil: 'networkidle'`.
+`waitUntil: 'networkidle'` no `goto` (pode nunca chegar no Pinterest); `waitForLoadState('networkidle')`
+só com `timeout` curto e `.catch`, como em `waitReactionState`.
 
 ## Comandos
 
@@ -25,9 +26,16 @@ de navegador trocada por `playwright-core`. As diferenças ficam em `getBrowser`
 npm install                                          # puppeteer-core e playwright-core
 node --check _pinterest_scraper_image_like.js        # checagem de sintaxe
 node _pinterest_scraper_image_like.js --help         # ajuda (gerada do comentário do topo)
+node _test_validate.js --help                        # teste de ponta a ponta (ver abaixo)
 ```
 
-Não há build, testes automatizados nem linter.
+Não há build, testes unitários nem linter. [_test_validate.js](_test_validate.js) roda o scraper de
+verdade com uma lista (padrão `_pinterest.txt` → `./imgs`) e valida saída, resumo, imagens, log,
+reexecução e `-c`. **Ele usa a conta do Pinterest e reage aos Pins**: só rode com pedido do usuário
+(`--no-like` evita reações; `--skip-run` só valida a pasta). Saídas de teste (`imgs/`, `imgs_pw/`) estão no `.gitignore`.
+Antes de validar ele chama [_test_reset.js](_test_reset.js) (pule com `--no-reset`): apaga as imagens da pasta, esvazia o
+log e **remove as reações** dos Pins da lista. O reset só clica com `aria-pressed="true"` estável (nunca adiciona
+reação) e recusa pastas fora do projeto ou a raiz dele. Também é destrutivo: só com pedido do usuário.
 
 ## Arquitetura (ordem no arquivo)
 
@@ -38,8 +46,11 @@ Não há build, testes automatizados nem linter.
 3. Utilitários: nomes de arquivo, leitura da lista, `linkKey` (compara links pelo ID do Pin) e
    log de downloads `_pinterest_claude_download.txt`, gravado **na pasta de destino**.
 4. Browser: `getBrowser` conecta ao Chrome em `CHROME_DEBUG_URL` (9222) ou abre um com perfil `./.pinterest-profile`.
-5. Passos por Pin: `isLoggedIn`/`loginPinterest` → `getMainImage` → `download` → `reactWithHeart`,
-   orquestrados em `processPin`.
+5. Passos por Pin: `openPin` → `isLoggedIn`/`loginPinterest` → `getMainImage` → `download` → `reactWithHeart`,
+   orquestrados em `processPin`. `openPin` (idêntico nos dois scripts) navega com `domcontentloaded` e
+   valida o carregamento com `missingParts`: espera `LOAD_DELAY_MS` (1 s), depois até `LOAD_EXTRA_MS` (5 s),
+   senão `reload` — até `LOAD_ATTEMPTS` (3) e então lança "Link quebrado". Só o botão "Reagir" faltando
+   (exigido com like) não quebra o link. Redirecionamento para fora de um Pin falha na hora, sem refresh.
 6. `createProgress`: barra fixa na última linha. Ela substitui `console.log/warn/error`
    enquanto está ativa (apaga a barra, escreve, redesenha); `stop()` restaura os originais.
    Escreva sempre via `console.*`, nunca com `process.stdout.write` direto durante o loop, senão a barra se mistura ao texto.
@@ -67,6 +78,9 @@ Não há build, testes automatizados nem linter.
 - O arquivo `.txt` de entrada nunca é alterado; só o log na pasta de destino recebe links (append, sem duplicar).
   Pins com erro não entram no log, para serem tentados de novo.
 - Clicar em "Reagir" num Pin já reagido **desfaz** a reação; mantenha a checagem de `aria-pressed`.
+  O Pinterest desenha o botão com `aria-pressed="false"` e só depois aplica a reação da conta:
+  ler cedo demais desfez reações reais num teste (Playwright). Por isso existem `waitReactionState`
+  (Playwright) e, nos dois scripts, a trava que clica de novo quando o contador **cai** após o clique.
 - Não faça commit de `.pinterest-profile/` (sessão/cookies do navegador) nem de credenciais.
   Prefira `PINTEREST_USER`/`PINTEREST_PASS` a `-P`.
 - Não rode o script contra o Pinterest real sem pedir ao usuário: ele usa a conta dele e reage a Pins.
